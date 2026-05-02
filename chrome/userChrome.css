@@ -1,0 +1,64 @@
+/* Prevent sidebar from expanding on hover */
+#navigator-toolbox:hover {
+  --zen-sidebar-expanded-width: var(--zen-sidebar-width) !important;
+  width: var(--zen-sidebar-width) !important;
+  max-width: var(--zen-sidebar-width) !important;
+}
+
+#navigator-toolbox:not([zen-sidebar-expanded="true"]) {
+  --zen-sidebar-expanded-width: var(--zen-sidebar-width) !important;
+}
+
+/* Show tab title as tooltip on hover */
+.tabbrowser-tab {
+  tooltip: auto !important;
+}
+
+.tabbrowser-tab .tab-label-container {
+  display: none !important;
+}
+
+/* Hide workspaces button */
+.zen-current-workspace-indicator {
+  display: none !important;
+}
+
+/* Hide pinned tabs separator and clear button */
+.pinned-tabs-container-separator {
+  display: none !important;
+}
+
+/* Hide container/identity color indicators on tabs */
+.tabbrowser-tab[usercontextid] .tab-context-line {
+  display: none !important;
+}
+
+/* Hide split-view group indicators in sidebar */
+tab-group[split-view-group] .tab-group-label-container {
+  display: none !important;
+}
+
+tab-group[split-view-group] .tab-context-line {
+  display: none !important;
+}
+
+/* Show bookmark star button in URL bar */
+#star-button-box {
+  display: flex !important;
+}
+
+/* Hide heuristic search result when Alt+N opens URL bar with % prefix */
+#urlbar[zen-newtab] .urlbarView-row[type="search"] {
+  display: none !important;
+}
+
+/* Hide sidebar and toolbar in fullscreen */
+:root[inDOMFullscreen] #navigator-toolbox,
+:root[sizemode="fullscreen"] #navigator-toolbox {
+  display: none !important;
+}
+
+:root[inDOMFullscreen] #nav-bar,
+:root[sizemode="fullscreen"] #nav-bar {
+  display: none !important;
+}

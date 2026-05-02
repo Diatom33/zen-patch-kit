@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ZEN_DIR="${ZEN_DIR:-$HOME/Downloads/zen.linux-x86_64/zen}"
+OMNI_SRC="${OMNI_SRC:-/tmp/zen_browser_omni}"
+OMNI_JAR="$ZEN_DIR/browser/omni.ja"
+PATCH_FILE="${PATCH_FILE:-$HOME/bin/zen-bsp.patch}"
+PROFILE_DIR=$(find "$HOME/.config/zen" -maxdepth 1 -name "*.Default (release)" -type d | head -1)
+CACHE_DIR=$(find "$HOME/.cache/zen" -maxdepth 1 -name "*.Default (release)" -type d 2>/dev/null | head -1)
+
+case "${1:-rebuild}" in
+  extract)
+    echo "Extracting $OMNI_JAR -> $OMNI_SRC"
+    rm -rf "$OMNI_SRC"
+    mkdir -p "$OMNI_SRC"
+    # omni.ja has prepended bytes from Mozilla's optimizer; unzip warns (exit 2)
+    # but extracts correctly. Tolerate codes <=2; fail only on real errors.
+    unzip -o -q "$OMNI_JAR" -d "$OMNI_SRC" || [ $? -le 2 ]
+    cd "$OMNI_SRC" && git init -q && git add -A && git commit -q -m "fresh extract"
+    echo "Done. Edit files in $OMNI_SRC, then run: zen-rebuild"
+    ;;
+  patch)
+    # Re-extract before patching so we always start from a clean upstream
+    # state — running zen-patch against an already-patched tree would
+    # double-apply patches that aren't idempotent at the line level.
+    "$0" extract
+    if command -v zen-patch >/dev/null 2>&1; then
+      zen-patch
+    else
+      echo "zen-patch (python) not on PATH — falling back to legacy $PATCH_FILE"
+      if [ ! -f "$PATCH_FILE" ]; then
+        echo "No legacy patch file at $PATCH_FILE either"
+        exit 1
+      fi
+      cd "$OMNI_SRC"
+      git apply --3way "$PATCH_FILE" || {
+        echo "Patch failed — conflicts in $OMNI_SRC"
+        exit 1
+      }
+    fi
+    "$0" rebuild
+    ;;
+  rebuild)
+    if [ ! -d "$OMNI_SRC" ]; then
+      echo "No extracted omni at $OMNI_SRC — run 'zen-rebuild extract' first"
+      exit 1
+    fi
+    # Dated backup so .bak clobbering can never lose history.
+    BACKUP_DIR="$ZEN_DIR/browser/omni.ja.backups"
+    mkdir -p "$BACKUP_DIR"
+    STAMP=$(date +%Y%m%d-%H%M%S)
+    cp "$OMNI_JAR" "$BACKUP_DIR/omni.ja.$STAMP"
+    # Prune older dated backups, keep last 10.
+    ls -1t "$BACKUP_DIR"/omni.ja.* 2>/dev/null | tail -n +11 | xargs -r rm -f
+    # Keep .bak for back-compat with `restore`, but only as a pointer to
+    # the dated copy. (The .bak itself is no longer the source of truth.)
+    ln -sf "$BACKUP_DIR/omni.ja.$STAMP" "$OMNI_JAR.bak"
+    cd "$OMNI_SRC"
+    zip -0 -r -X /tmp/omni_new.ja . -x '.git/*' -q
+    cp /tmp/omni_new.ja "$OMNI_JAR"
+    rm /tmp/omni_new.ja
+    if [ -n "$CACHE_DIR" ]; then
+      rm -rf "$CACHE_DIR/startupCache"
+    fi
+    echo "Rebuilt $OMNI_JAR"
+    echo "Backup: $BACKUP_DIR/omni.ja.$STAMP (.bak symlink updated)"
+    echo "Launch with: $ZEN_DIR/zen-bin --purgecaches"
+    ;;
+  restore)
+    # Resolves through the .bak symlink to the dated backup, or uses a
+    # legacy regular .bak if that's what's there.
+    if [ -e "$OMNI_JAR.bak" ]; then
+      TARGET=$(readlink -f "$OMNI_JAR.bak")
+      cp "$TARGET" "$OMNI_JAR"
+      if [ -n "$CACHE_DIR" ]; then
+        rm -rf "$CACHE_DIR/startupCache"
+      fi
+      echo "Restored from $TARGET"
+    else
+      echo "No backup found at $OMNI_JAR.bak"
+      echo "Available dated backups:"
+      ls -1t "$ZEN_DIR/browser/omni.ja.backups/" 2>/dev/null | head -10 || echo "  (none)"
+      exit 1
+    fi
+    ;;
+  list-backups)
+    BACKUP_DIR="$ZEN_DIR/browser/omni.ja.backups"
+    if [ -d "$BACKUP_DIR" ]; then
+      ls -lht "$BACKUP_DIR"/ 2>/dev/null
+    else
+      echo "No dated backups yet at $BACKUP_DIR"
+    fi
+    ;;
+  *)
+    echo "Usage: zen-rebuild [extract|patch|rebuild|restore|list-backups]"
+    echo "  extract       - unpack omni.ja to $OMNI_SRC for editing"
+    echo "  patch         - extract, apply ~/bin/zen-bsp.patch, rebuild"
+    echo "  rebuild       - repack $OMNI_SRC into omni.ja (default)"
+    echo "  restore       - revert omni.ja from latest dated backup"
+    echo "  list-backups  - show all dated omni.ja backups"
+    ;;
+esac

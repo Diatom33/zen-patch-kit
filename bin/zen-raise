@@ -1,0 +1,6 @@
+#!/bin/bash
+# Launch Zen and raise its window. Override the binary location with $ZEN_BIN.
+ZEN_BIN="${ZEN_BIN:-$HOME/Downloads/zen.linux-x86_64/zen/zen}"
+"$ZEN_BIN" "$@" &
+sleep 0.3
+wmctrl -x -a zen

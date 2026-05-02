@@ -1,0 +1,627 @@
+#!/usr/bin/env python3
+"""
+zen-patch: Apply all custom modifications to a freshly extracted Zen browser omni.ja.
+
+Usage:
+    zen-rebuild extract   # extract fresh omni.ja
+    zen-patch             # apply all patches
+    zen-rebuild rebuild   # repack omni.ja
+
+Each patch is a function that takes file content and returns modified content.
+If a search pattern isn't found, the patch fails loudly so you know what broke.
+"""
+
+import sys
+import os
+
+OMNI = os.environ.get("OMNI_SRC", "/tmp/zen_browser_omni")
+
+def patch(path, old, new, *, count=1):
+    """Replace `old` with `new` in file at `path`. Idempotent: skips if already applied."""
+    full = os.path.join(OMNI, path)
+    with open(full) as f:
+        content = f.read()
+    if new in content:
+        print(f"  skip (already applied): {path}")
+        return True
+    n = content.count(old)
+    if n == 0:
+        print(f"  FAIL: pattern not found in {path}")
+        print(f"  Looking for: {old[:120]}...")
+        return False
+    if n != count:
+        print(f"  WARN: expected {count} match(es), found {n} in {path}")
+    content = content.replace(old, new, count)
+    with open(full, "w") as f:
+        f.write(content)
+    return True
+
+def insert_after(path, anchor, addition):
+    """Insert `addition` after `anchor` in file."""
+    return patch(path, anchor, anchor + addition)
+
+def insert_before(path, anchor, addition):
+    """Insert `addition` before `anchor` in file."""
+    return patch(path, anchor, addition + anchor)
+
+# ─── Patch definitions ────────────────────────────────────────────────
+
+def patch_urlbar_openpage():
+    """Prevent % (OPENPAGE restriction) from activating search mode chip."""
+    print("[1/9] UrlbarInput.mjs: OPENPAGE restriction fix")
+    return patch(
+        "chrome/browser/content/browser/urlbar/UrlbarInput.mjs",
+        "if (mode) {\n      // Return a copy so callers don't modify the object in LOCAL_SEARCH_MODES.",
+        "if (mode && token !== lazy.UrlbarTokenizer.RESTRICT.OPENPAGE) {\n      // Return a copy so callers don't modify the object in LOCAL_SEARCH_MODES.",
+    )
+
+def patch_webrtc_parent():
+    """Move updateMediaSharing after updateBrowserSharing, wrap in try-catch."""
+    print("[2/9] WebRTCParent.sys.mjs: reorder + guard updateMediaSharing")
+    return patch(
+        "actors/WebRTCParent.sys.mjs",
+        """\
+      browser.ownerGlobal.gZenMediaController.updateMediaSharing(state);
+      tabbrowser.updateBrowserSharing(browser, {
+        webRTC: state,
+      });""",
+        """\
+      tabbrowser.updateBrowserSharing(browser, {
+        webRTC: state,
+      });
+      try {
+        browser.ownerGlobal.gZenMediaController.updateMediaSharing(state);
+      } catch (e) {
+        console.error("ZenMediaController.updateMediaSharing failed:", e);
+      }""",
+    )
+
+def patch_media_controller():
+    """Null guard + remove premature unmute messages in updateMediaSharing."""
+    print("[3/9] ZenMediaController.mjs: null guard + remove premature unmute")
+    ok1 = patch(
+        "chrome/browser/content/browser/zen-components/ZenMediaController.mjs",
+        """\
+  updateMediaSharing(data) {
+    const { windowId""",
+        """\
+  updateMediaSharing(data) {
+    if (!this.mediaControlBar) {
+      return;
+    }
+
+    const { windowId""",
+    )
+    ok2 = patch(
+        "chrome/browser/content/browser/zen-components/ZenMediaController.mjs",
+        """\
+      if (shouldShow && !(isCurrentBrowser && this.isSharing)) {
+        const webRTC =
+          browser.browsingContext.currentWindowGlobal.getActor("WebRTC");
+        webRTC.sendAsyncMessage("webrtc:UnmuteMicrophone");
+        webRTC.sendAsyncMessage("webrtc:UnmuteCamera");
+
+        if (this._currentBrowser) {""",
+        """\
+      if (shouldShow && !(isCurrentBrowser && this.isSharing)) {
+        if (this._currentBrowser) {""",
+    )
+    return ok1 and ok2
+
+def patch_browser_places():
+    """Show keyword/location fields in bookmark panel.
+
+    Two call-sites historically used different syntax for the same hiddenRows
+    config; 1.19.11b only kept the object-property form, so we fix that one.
+    """
+    print("[4/9] browser-places.js: show all bookmark panel fields")
+    F = "chrome/browser/content/browser/browser-places.js"
+    full = os.path.join(OMNI, F)
+    with open(full) as f:
+        content = f.read()
+    ok = True
+    # Object-property form (line ~515 in 1.19.11b).
+    if 'hiddenRows: [],' not in content:
+        ok &= patch(F,
+            'hiddenRows: ["location", "keyword"],',
+            'hiddenRows: [],',
+        )
+    else:
+        print("  skip (object-form already empty)")
+    # Legacy `let hiddenRows = [...]` form — only patch if still present
+    # with the un-empty value.
+    with open(full) as f:
+        content = f.read()
+    if 'let hiddenRows = ["location", "keyword"];' in content:
+        ok &= patch(F,
+            'let hiddenRows = ["location", "keyword"];',
+            "let hiddenRows = [];",
+            count=2,
+        )
+    return ok
+
+# Restored 2026-04-30 (same day): the 1.19.11b "absorbed upstream" assumption was
+# wrong — vanilla 1.19.11b still has MAX_TABS=4, no buildBSP, no zen-tab-popout-button,
+# no popTabFromSplit, no SSTabRestored handler, and disables cmd_zenNewEmptySplit
+# whenever the current tab is in a split (which is the "Alt+N only works on first
+# split" symptom). All three patches reinstated below from commit 64a5d0a^.
+
+def patch_zen_sets():
+    """Add cmd_zenPopTabFromSplit command binding."""
+    print("[5/9] zen-sets.js: add pop-tab-from-split command")
+    return insert_before(
+        "chrome/browser/content/browser/zen-sets.js",
+        '          case "cmd_zenSplitViewContextMenu":',
+        '          case "cmd_zenPopTabFromSplit":\n'
+        "            gZenViewSplitter.popTabFromSplit();\n"
+        "            break;\n",
+    )
+
+def patch_split_view_css():
+    """Add pop-out button icon style."""
+    print("[6/9] zen-split-view.css: pop-out button style")
+    return insert_before(
+        "chrome/browser/content/browser/zen-styles/zen-split-view.css",
+        "\n  &.zen-tab-unsplit-button",
+        '\n  &.zen-tab-popout-button {\n'
+        '    list-style-image: url("chrome://browser/skin/zen-icons/open.svg");\n'
+        "  }\n",
+    )
+
+def patch_view_splitter():
+    """BSP tiling: MAX_TABS=16, pop-out button, SessionStore persistence, BSP layout, add-to-existing-split."""
+    print("[7/9] ZenViewSplitter.mjs: BSP tiling + enhancements")
+    F = "chrome/browser/content/browser/zen-components/ZenViewSplitter.mjs"
+    ok = True
+
+    # MAX_TABS = 16
+    ok &= patch(F, "MAX_TABS = 4;", "MAX_TABS = 16;")
+
+    # Allow Alt+N (createEmptySplit) when already in a split view
+    ok &= patch(F,
+        'tab.hasAttribute("zen-empty-tab") || tab.splitView;',
+        'tab.hasAttribute("zen-empty-tab");',
+    )
+
+    # Add _closedSplitTabs field (use \n  prefix to disambiguate from `this._lastOpenedTab = null;` later in the file)
+    ok &= patch(F,
+        "\n  _lastOpenedTab = null;\n",
+        "\n  _lastOpenedTab = null;\n  _closedSplitTabs = [];\n",
+    )
+
+    # Add SSTabRestored listener in init()
+    ok &= insert_after(F,
+        'window.addEventListener("TabSelect", this.onTabSelect.bind(this));',
+        '\n    window.addEventListener("SSTabRestored", this.handleTabRestored.bind(this));',
+    )
+
+    # Add handleTabRestored method after handleTabClose
+    ok &= insert_after(F,
+        "this.removeTabFromGroup(tab, groupIndex, { forUnsplit: true });\n  }\n\n  /**",
+        """
+  handleTabRestored(event) {
+    const tab = event.target;
+    if (tab.splitView) {
+      return;
+    }
+    let groupId;
+    try {
+      groupId = SessionStore.getCustomTabValue(tab, "zenSplitGroupId");
+    } catch (e) {
+      return;
+    }
+    if (!groupId) {
+      return;
+    }
+    const group = this._data.find(g => g.groupId === groupId);
+    if (!group || group.tabs.length >= this.MAX_TABS) {
+      return;
+    }
+    const lastTab = group.tabs[group.tabs.length - 1];
+    const targetNode = this.getSplitNodeFromTab(lastTab);
+    if (targetNode) {
+      const container = lastTab.linkedBrowser.closest(
+        ".browserSidebarContainer"
+      );
+      const rect = container?.getBoundingClientRect();
+      const side = rect && rect.width >= rect.height ? "right" : "bottom";
+      const newLeaf = new nsSplitLeafNode(tab, 0);
+      this.splitIntoNode(targetNode, newLeaf, side, 0.5);
+    } else {
+      this.addTabToSplit(tab, group.layoutTree, false);
+    }
+    group.tabs.push(tab);
+    tab.splitView = true;
+    const tabGroup = group.tabs[0]?.group;
+    if (tabGroup) {
+      gBrowser.moveTabToExistingGroup(tab, tabGroup);
+    }
+    this.activateSplitView(group, true);
+  }
+
+  /**""",
+    )
+
+    # SessionStore: clear groupId on resetTabState
+    ok &= patch(F,
+        "tab.splitView = false;\n    delete tab.splitViewValue;\n    tab.removeAttribute(\"split-view\");",
+        "tab.splitView = false;\n    delete tab.splitViewValue;\n    tab.removeAttribute(\"split-view\");\n"
+        '    if (!tab.closing) {\n'
+        '      try {\n'
+        '        SessionStore.deleteCustomTabValue(tab, "zenSplitGroupId");\n'
+        '      } catch (e) {}\n'
+        '    }',
+    )
+
+    # BSP layout for grid type (replace upstream's simple grid with BSP)
+    ok &= patch(F,
+        """\
+    } else if (gridType === "grid") {
+      rootNode = new nsSplitNode("row");
+      const rowWidth = 100 / Math.ceil(tabs.length / 2);
+      for (let i = 0; i < tabs.length - 1; i += 2) {
+        const columnNode = new nsSplitNode("column", rowWidth, 100);
+        columnNode.children = [
+          new nsSplitLeafNode(tabs[i], 50),
+          new nsSplitLeafNode(tabs[i + 1], 50),
+        ];
+        rootNode.addChild(columnNode, false);
+      }
+      if (tabs.length % 2 !== 0) {
+        rootNode.addChild(
+          new nsSplitLeafNode(tabs[tabs.length - 1], rowWidth),
+          false
+        );
+      }
+    }""",
+        """\
+    } else if (gridType === "grid") {
+      const buildBSP = (tabList, direction) => {
+        if (tabList.length === 1) {
+          return new nsSplitLeafNode(tabList[0], 100);
+        }
+        const mid = Math.ceil(tabList.length / 2);
+        const node = new nsSplitNode(direction);
+        const nextDir = direction === "row" ? "column" : "row";
+        const left = buildBSP(tabList.slice(0, mid), nextDir);
+        const right = buildBSP(tabList.slice(mid), nextDir);
+        left.sizeInParent = (mid / tabList.length) * 100;
+        right.sizeInParent = ((tabList.length - mid) / tabList.length) * 100;
+        node.addChild(left, true);
+        node.addChild(right, false);
+        return node;
+      };
+      rootNode = buildBSP(tabs, "row");
+    }""",
+    )
+
+    # SessionStore: save groupId in applyGridToTabs
+    ok &= patch(F,
+        '      tab.setAttribute("split-view", "true");\n'
+        '      const container = tab.linkedBrowser?.closest(".browserSidebarContainer");',
+        '      tab.setAttribute("split-view", "true");\n'
+        '      try {\n'
+        '        const groupId = this._data[this.currentView]?.groupId || "";\n'
+        '        SessionStore.setCustomTabValue(tab, "zenSplitGroupId", groupId);\n'
+        '      } catch (e) {}\n'
+        '      const container = tab.linkedBrowser?.closest(".browserSidebarContainer");',
+    )
+
+    # Pop-out button in _createHeader
+    ok &= patch(F,
+        "    header.appendChild(rearrangeButton);\n    header.appendChild(removeButton);",
+        '    const popOutButton = document.createXULElement("toolbarbutton");\n'
+        '    popOutButton.classList.add("zen-tab-popout-button");\n'
+        '    popOutButton.setAttribute("tooltiptext", "Pop tab out of split");\n'
+        "    popOutButton.addEventListener(\"click\", event => {\n"
+        '      const browser = container.querySelector("browser");\n'
+        "      if (browser) {\n"
+        "        const tab = gBrowser.getTabForBrowser(browser);\n"
+        "        if (tab) {\n"
+        "          const groupIndex = this._data.findIndex(group =>\n"
+        "            group.tabs.includes(tab)\n"
+        "          );\n"
+        "          if (groupIndex >= 0) {\n"
+        "            const group = this._data[groupIndex];\n"
+        '            const nextTab = group.tabs.find(t => t !== tab) || group.tabs[0];\n'
+        "            gBrowser.selectedTab = nextTab;\n"
+        "            this.removeTabFromGroup(tab, groupIndex, {\n"
+        "              forUnsplit: true,\n"
+        "              changeTab: false,\n"
+        "            });\n"
+        "          }\n"
+        "        }\n"
+        "      }\n"
+        "    });\n"
+        "    header.appendChild(rearrangeButton);\n"
+        "    header.appendChild(popOutButton);\n"
+        "    header.appendChild(removeButton);",
+    )
+
+    # popTabFromSplit method (add before unsplitCurrentView)
+    ok &= insert_before(F,
+        "  /**\n   * @description unsplit the current view.]",
+        '  popTabFromSplit() {\n'
+        "    if (this.currentView < 0) {\n"
+        "      return;\n"
+        "    }\n"
+        "    const tab = gBrowser.selectedTab;\n"
+        "    const group = this._data[this.currentView];\n"
+        "    if (!group || !group.tabs.includes(tab)) {\n"
+        "      return;\n"
+        "    }\n"
+        '    const nextTab = group.tabs.find(t => t !== tab) || group.tabs[0];\n'
+        "    gBrowser.selectedTab = nextTab;\n"
+        "    this.removeTabFromGroup(tab, this.currentView, {\n"
+        "      forUnsplit: true,\n"
+        "      changeTab: false,\n"
+        "    });\n"
+        "  }\n\n",
+    )
+
+    # createEmptySplit: add-to-existing-split support.
+    # Bakes `_lastSearch = "% "` into the new hasActiveSplit branch so the
+    # open-tabs filter shows on subsequent Alt+N (the existing else branch
+    # gets `% ` from patch_split_prepend_percent).
+    ok &= patch(F,
+        """\
+  createEmptySplit(side = "right") {
+    const selectedTab = gBrowser.selectedTab;
+    const emptyTab = gZenWorkspaces._emptyTab;
+    const gridType = side === "top" || side === "bottom" ? "hsep" : "vsep";
+    const topOrLeft = side === "top" || side === "left";
+    let tabs = topOrLeft ? [emptyTab, selectedTab] : [selectedTab, emptyTab];
+    const data = {
+      tabs,
+      gridType,
+      layoutTree: this.calculateLayoutTree(tabs, gridType),
+    };
+    this.#withoutSplitViewTransition(() => {
+      this._data.push(data);
+      this.activateSplitView(data);
+      gBrowser.selectedTab = emptyTab;
+      setTimeout(() => {""",
+        """\
+  createEmptySplit(side = "right") {
+    const selectedTab = gBrowser.selectedTab;
+    const emptyTab = gZenWorkspaces._emptyTab;
+    const gridType = side === "top" || side === "bottom" ? "hsep" : "vsep";
+    const topOrLeft = side === "top" || side === "left";
+
+    const existingGroupIndex = this._data.findIndex(group =>
+      group.tabs.includes(selectedTab)
+    );
+    const hasActiveSplit = existingGroupIndex >= 0;
+
+    if (hasActiveSplit) {
+      const group = this._data[existingGroupIndex];
+      if (group.tabs.length >= this.MAX_TABS) {
+        return;
+      }
+      this.#withoutSplitViewTransition(() => {
+        const selectedNode = this.getSplitNodeFromTab(selectedTab);
+        const container = selectedTab.linkedBrowser.closest(
+          ".browserSidebarContainer"
+        );
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          side = rect.width >= rect.height ? "right" : "bottom";
+        }
+        const emptyLeaf = new nsSplitLeafNode(emptyTab, 0);
+        this.splitIntoNode(selectedNode, emptyLeaf, side, 0.5);
+        group.tabs.push(emptyTab);
+        emptyTab.splitView = true;
+        gBrowser.moveTabToExistingGroup(emptyTab, selectedTab.group);
+        this.activateSplitView(group, true);
+        gBrowser.selectedTab = emptyTab;
+        setTimeout(() => {
+          window.addEventListener(
+            "ZenURLBarClosed",
+            event => {
+              const { onElementPicked, onSwitch } = event.detail;
+              const groupIndex = this._data.findIndex(g =>
+                g.tabs.includes(emptyTab)
+              );
+              const newSelectedTab = gBrowser.selectedTab;
+              const cleanup = () => {
+                this.removeTabFromGroup(emptyTab, groupIndex, {
+                  changeTab: !onSwitch,
+                  forUnsplit: true,
+                });
+                const command = document.getElementById("cmd_zenNewEmptySplit");
+                command.removeAttribute("disabled");
+              };
+              if (onElementPicked) {
+                if (
+                  newSelectedTab === emptyTab ||
+                  newSelectedTab === selectedTab ||
+                  selectedTab.getAttribute("zen-workspace-id") !==
+                    newSelectedTab.getAttribute("zen-workspace-id")
+                ) {
+                  cleanup();
+                  return;
+                }
+                const emptyNode = this.getSplitNodeFromTab(emptyTab);
+                if (emptyNode) {
+                  emptyNode.tab = newSelectedTab;
+                  this._tabToSplitNode.delete(emptyTab);
+                  this._tabToSplitNode.set(newSelectedTab, emptyNode);
+                }
+                const g = this._data[groupIndex];
+                const idx = g.tabs.indexOf(emptyTab);
+                if (idx >= 0) {
+                  g.tabs[idx] = newSelectedTab;
+                }
+                this.resetTabState(emptyTab, false);
+                newSelectedTab.splitView = true;
+                gBrowser.moveTabToExistingGroup(newSelectedTab, selectedTab.group);
+                gBrowser.selectedTab = selectedTab;
+                this.activateSplitView(g, true);
+              } else {
+                cleanup();
+              }
+            },
+            { once: true }
+          );
+          gZenUIManager._lastSearch = "% ";
+          gZenUIManager.handleNewTab(false, false, "tab", true);
+        });
+      });
+    } else {
+    let tabs = topOrLeft ? [emptyTab, selectedTab] : [selectedTab, emptyTab];
+    const data = {
+      tabs,
+      gridType,
+      layoutTree: this.calculateLayoutTree(tabs, gridType),
+    };
+    this.#withoutSplitViewTransition(() => {
+      this._data.push(data);
+      this.activateSplitView(data);
+      gBrowser.selectedTab = emptyTab;
+      setTimeout(() => {""",
+    )
+
+    # Close the else block at the end of createEmptySplit
+    ok &= patch(F,
+        "        gZenUIManager.handleNewTab(false, false, \"tab\", true);\n      });\n    });\n  }",
+        "        gZenUIManager.handleNewTab(false, false, \"tab\", true);\n      });\n    });\n    }\n  }",
+    )
+
+    return ok
+
+def patch_split_close_fix():
+    """Skip closing tabs in removeTabFromGroup/removeGroup so Ctrl+W on a split
+    tab actually closes it (upstream 1.19.11b runs resetTabState/ungroupTab/
+    selectedTab assignment against the mid-closing tab, which leaves it
+    discarded but not removed)."""
+    print("[9/9] ZenViewSplitter.mjs: don't operate on tabs Firefox is mid-closing")
+    F = "chrome/browser/content/browser/zen-components/ZenViewSplitter.mjs"
+    ok = True
+    ok &= patch(F,
+        '    if (group.tabs.length < 3) {\n'
+        '      // We need to remove all remaining tabs from the group when unsplitting\n'
+        '      let remainingTabs = [...group.tabs]; // Copy array since we\'ll modify it\n'
+        '      if (!dontRebuildGrid) {\n'
+        '        for (let remainingTab of remainingTabs) {\n'
+        '          this.resetTabState(remainingTab, forUnsplit);\n'
+        '        }\n'
+        '      }\n'
+        '      this.removeGroup(groupIndex);\n'
+        '      if (changeTab) {\n'
+        '        gBrowser.selectedTab = remainingTabs[0];\n',
+        '    if (group.tabs.length < 3) {\n'
+        '      // We need to remove all remaining tabs from the group when unsplitting.\n'
+        '      // Exclude the tab being removed if Firefox is mid-closing it — calling\n'
+        '      // resetTabState/ungroupTab on a closing tab interferes with the close\n'
+        '      // machinery (leaves the tab discarded-but-not-removed in the tab bar).\n'
+        '      let remainingTabs = group.tabs.filter(t => !t.closing);\n'
+        '      if (!dontRebuildGrid) {\n'
+        '        for (let remainingTab of remainingTabs) {\n'
+        '          this.resetTabState(remainingTab, forUnsplit);\n'
+        '        }\n'
+        '      }\n'
+        '      this.removeGroup(groupIndex);\n'
+        '      if (changeTab && remainingTabs.length) {\n'
+        '        gBrowser.selectedTab = remainingTabs[0];\n',
+    )
+    ok &= patch(F,
+        '  removeGroup(groupIndex) {\n'
+        '    const group = this._data[groupIndex];\n'
+        '    for (const tab of group.tabs.reverse()) {\n'
+        '      if (tab.group?.hasAttribute("split-view-group")) {\n'
+        '        gBrowser.ungroupTab(tab);\n'
+        '        this.#dispatchItemEvent("ZenTabRemovedFromSplit", tab);\n'
+        '      }\n'
+        '    }\n'
+        '    if (this.currentView === groupIndex) {\n'
+        '      this.deactivateCurrentSplitView();\n'
+        '    }\n'
+        '    for (const tab of this._data[groupIndex].tabs) {\n'
+        '      this.resetTabState(tab, true);\n'
+        '    }\n'
+        '    this._data.splice(groupIndex, 1);\n'
+        '  }\n',
+        '  removeGroup(groupIndex) {\n'
+        '    const group = this._data[groupIndex];\n'
+        '    for (const tab of group.tabs.reverse()) {\n'
+        '      // Skip tabs Firefox is mid-closing — DOM moves on a closing tab\n'
+        '      // break the close flow.\n'
+        '      if (tab.closing) {\n'
+        '        continue;\n'
+        '      }\n'
+        '      if (tab.group?.hasAttribute("split-view-group")) {\n'
+        '        gBrowser.ungroupTab(tab);\n'
+        '        this.#dispatchItemEvent("ZenTabRemovedFromSplit", tab);\n'
+        '      }\n'
+        '    }\n'
+        '    if (this.currentView === groupIndex) {\n'
+        '      this.deactivateCurrentSplitView();\n'
+        '    }\n'
+        '    for (const tab of this._data[groupIndex].tabs) {\n'
+        '      if (tab.closing) {\n'
+        '        continue;\n'
+        '      }\n'
+        '      this.resetTabState(tab, true);\n'
+        '    }\n'
+        '    this._data.splice(groupIndex, 1);\n'
+        '  }\n',
+    )
+    return ok
+
+
+def patch_split_prepend_percent():
+    """Prepend '% ' (open-tabs filter) in URL bar when Alt+N opens a split pane.
+
+    Upstream 1.19.11b consolidated createEmptySplit's two branches into one,
+    so there's now a single handleNewTab call site to anchor on inside this
+    file. (We still scope to ZenViewSplitter.mjs to avoid any other handleNewTab
+    callers elsewhere in the tree.)
+    """
+    print("[8/9] ZenViewSplitter.mjs: prepend % in split URL bar")
+    F = "chrome/browser/content/browser/zen-components/ZenViewSplitter.mjs"
+    return patch(F,
+        '        );\n'
+        '        gZenUIManager.handleNewTab(false, false, "tab", true);\n',
+        '        );\n'
+        '        gZenUIManager._lastSearch = "% ";\n'
+        '        gZenUIManager.handleNewTab(false, false, "tab", true);\n',
+    )
+
+
+# ─── Main ─────────────────────────────────────────────────────────────
+
+def main():
+    if not os.path.isdir(OMNI):
+        print(f"Error: {OMNI} not found. Run 'zen-rebuild extract' first.")
+        sys.exit(1)
+
+    patches = [
+        patch_urlbar_openpage,
+        patch_webrtc_parent,
+        patch_media_controller,
+        patch_browser_places,
+        patch_zen_sets,
+        patch_split_view_css,
+        patch_view_splitter,
+        patch_split_prepend_percent,
+        patch_split_close_fix,
+    ]
+
+    results = []
+    for p in patches:
+        ok = p()
+        status = "OK" if ok else "FAILED"
+        print(f"  -> {status}\n")
+        results.append((p.__name__, ok))
+
+    failed = [name for name, ok in results if not ok]
+    if failed:
+        print(f"\n{len(failed)} patch(es) FAILED: {', '.join(failed)}")
+        print("Check if upstream changed the code patterns.")
+        sys.exit(1)
+    else:
+        print(f"All {len(patches)} patches applied successfully.")
+        print("Run 'zen-rebuild rebuild' to repack omni.ja.")
+
+if __name__ == "__main__":
+    main()
