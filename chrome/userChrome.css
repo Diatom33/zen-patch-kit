@@ -47,6 +47,14 @@ tab-group[split-view-group] .tab-context-line {
   display: flex !important;
 }
 
+/* Hide the new tab (+) button */
+#tabs-newtab-button,
+#zen-new-tab-button,
+#vertical-tabs-newtab-button,
+.tabs-newtab-button {
+  display: none !important;
+}
+
 /* Hide heuristic search result when Alt+N opens URL bar with % prefix */
 #urlbar[zen-newtab] .urlbarView-row[type="search"] {
   display: none !important;

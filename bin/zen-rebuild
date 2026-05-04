@@ -4,7 +4,6 @@ set -euo pipefail
 ZEN_DIR="${ZEN_DIR:-$HOME/Downloads/zen.linux-x86_64/zen}"
 OMNI_SRC="${OMNI_SRC:-/tmp/zen_browser_omni}"
 OMNI_JAR="$ZEN_DIR/browser/omni.ja"
-PATCH_FILE="${PATCH_FILE:-$HOME/bin/zen-bsp.patch}"
 PROFILE_DIR=$(find "$HOME/.config/zen" -maxdepth 1 -name "*.Default (release)" -type d | head -1)
 CACHE_DIR=$(find "$HOME/.cache/zen" -maxdepth 1 -name "*.Default (release)" -type d 2>/dev/null | head -1)
 
@@ -16,7 +15,10 @@ case "${1:-rebuild}" in
     # omni.ja has prepended bytes from Mozilla's optimizer; unzip warns (exit 2)
     # but extracts correctly. Tolerate codes <=2; fail only on real errors.
     unzip -o -q "$OMNI_JAR" -d "$OMNI_SRC" || [ $? -le 2 ]
-    cd "$OMNI_SRC" && git init -q && git add -A && git commit -q -m "fresh extract"
+    # No commit — `git add -A` populates the index, which is enough for
+    # `git diff` to compare working tree to extract baseline. Skipping the
+    # commit avoids the gpg-sign prompt for a throwaway /tmp repo.
+    cd "$OMNI_SRC" && git init -q && git add -A
     echo "Done. Edit files in $OMNI_SRC, then run: zen-rebuild"
     ;;
   patch)
@@ -24,20 +26,11 @@ case "${1:-rebuild}" in
     # state — running zen-patch against an already-patched tree would
     # double-apply patches that aren't idempotent at the line level.
     "$0" extract
-    if command -v zen-patch >/dev/null 2>&1; then
-      zen-patch
-    else
-      echo "zen-patch (python) not on PATH — falling back to legacy $PATCH_FILE"
-      if [ ! -f "$PATCH_FILE" ]; then
-        echo "No legacy patch file at $PATCH_FILE either"
-        exit 1
-      fi
-      cd "$OMNI_SRC"
-      git apply --3way "$PATCH_FILE" || {
-        echo "Patch failed — conflicts in $OMNI_SRC"
-        exit 1
-      }
+    if ! command -v zen-patch >/dev/null 2>&1; then
+      echo "zen-patch (python) not on PATH — install it (see README)"
+      exit 1
     fi
+    zen-patch
     "$0" rebuild
     ;;
   rebuild)
@@ -94,7 +87,7 @@ case "${1:-rebuild}" in
   *)
     echo "Usage: zen-rebuild [extract|patch|rebuild|restore|list-backups]"
     echo "  extract       - unpack omni.ja to $OMNI_SRC for editing"
-    echo "  patch         - extract, apply ~/bin/zen-bsp.patch, rebuild"
+    echo "  patch         - extract, run zen-patch, rebuild"
     echo "  rebuild       - repack $OMNI_SRC into omni.ja (default)"
     echo "  restore       - revert omni.ja from latest dated backup"
     echo "  list-backups  - show all dated omni.ja backups"

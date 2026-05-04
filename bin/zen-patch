@@ -195,10 +195,16 @@ def patch_view_splitter():
         '\n    window.addEventListener("SSTabRestored", this.handleTabRestored.bind(this));',
     )
 
-    # Add handleTabRestored method after handleTabClose
+    # Add handleTabRestored method after handleTabClose.
+    # Anchor stops at the closing `}` — including the next JSDoc's `/**` here
+    # would leave a stray `/**` in front of the inserted method, swallowing it
+    # into the next JSDoc comment block (so handleTabRestored would be defined
+    # only as commented-out text and `this.handleTabRestored.bind(this)` in
+    # init() would throw, breaking split-restore on Ctrl+Shift+T).
     ok &= insert_after(F,
-        "this.removeTabFromGroup(tab, groupIndex, { forUnsplit: true });\n  }\n\n  /**",
+        "this.removeTabFromGroup(tab, groupIndex, { forUnsplit: true });\n  }",
         """
+
   handleTabRestored(event) {
     const tab = event.target;
     if (tab.splitView) {
@@ -237,9 +243,7 @@ def patch_view_splitter():
       gBrowser.moveTabToExistingGroup(tab, tabGroup);
     }
     this.activateSplitView(group, true);
-  }
-
-  /**""",
+  }""",
     )
 
     # SessionStore: clear groupId on resetTabState
