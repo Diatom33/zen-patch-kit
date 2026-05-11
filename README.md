@@ -1,14 +1,8 @@
 # zen-patch-kit
 
-A re-applyable patcher for Zen Browser's `omni.ja`, plus the `user.js` and
-`userChrome.css` that pair with the patches, plus an optional Claude Code skill
-that drives the workflow.
+A patcher for [Zen Browser](https://zen-browser.app/)'s `omni.ja`, plus the `user.js` and `userChrome.css` that pair with the patches, plus an optional Claude Code skill that drives the workflow. All of these patches make changes to the browser matching my personal taste.
 
-Zen ships its frontend code inside `browser/omni.ja` (a zip archive). After
-every Zen update the archive is replaced, so any direct edits are lost. This
-kit applies a fixed set of patches to a freshly extracted `omni.ja` and
-repacks it — idempotently, so the same script works after every update until
-upstream changes a search pattern.
+Zen ships its frontend code inside `browser/omni.ja` (a zip archive). After every Zen update the archive is replaced, so any direct edits are lost. This kit applies a fixed set of patches to a freshly extracted `omni.ja` and repacks it — idempotently, so the same script works after every update until upstream changes a search pattern.
 
 > **Status:** Linux-only. Paths default to a typical
 > `~/Downloads/zen.linux-x86_64/` install but are overridable via env vars.
@@ -16,8 +10,7 @@ upstream changes a search pattern.
 
 ## What gets patched
 
-Nine patches in `bin/zen-patch` (Python). All are idempotent — re-running on
-an already-patched tree is a no-op.
+Nine patches in `bin/zen-patch` (Python). All are idempotent — re-running on an already-patched tree is a no-op.
 
 | # | File | What it does |
 |---|------|--------------|
@@ -31,17 +24,14 @@ an already-patched tree is a no-op.
 | 8 | `ZenViewSplitter.mjs` | Pre-seed `% ` so subsequent Alt+N splits show the open-tabs filter |
 | 9 | `ZenViewSplitter.mjs` | Close-tab fix in split view |
 
-If a patch's search pattern stops matching after a Zen update, the script
-fails loudly and points at the file. Read the new upstream source in
-`/tmp/zen_browser_omni/`, update the pattern in `bin/zen-patch`, and re-run.
+If a patch's search pattern stops matching after a Zen update, the script fails loudly and points at the file. Read the new upstream source in `/tmp/zen_browser_omni/`, update the pattern in `bin/zen-patch`, and re-run.
 
 ## Install
 
 Requirements: `bash`, `python3`, `unzip`, `zip`. Optional: `wmctrl` (for
 `zen-raise`).
 
-Clone the kit anywhere, then put the two patcher commands on your `$PATH`.
-The example below uses `~/bin/`, but anywhere on `$PATH` works:
+Clone the kit anywhere, then put the two patcher commands on your `$PATH`. The example below uses `~/bin/`, but anywhere on `$PATH` works:
 
 ```bash
 git clone <this-repo> ~/code/zen-patch-kit
@@ -51,8 +41,7 @@ ln -s ~/code/zen-patch-kit/bin/zen-rebuild ~/bin/zen-rebuild
 ln -s ~/code/zen-patch-kit/bin/zen-raise   ~/bin/zen-raise   # optional launcher
 ```
 
-Symlink the prefs and chrome CSS into your Zen profile (find the directory
-under `~/.config/zen/*.Default*/`):
+Symlink the prefs and chrome CSS into your Zen profile (find the directory under `~/.config/zen/*.Default*/`):
 
 ```bash
 PROFILE=$(echo ~/.config/zen/*.Default\ \(release\))
@@ -66,16 +55,13 @@ ln -s ~/code/zen-patch-kit/chrome/userChrome.css  "$PROFILE"/chrome/userChrome.c
 
 ### Optional: Claude Code skill
 
-`skill/SKILL.md` is a Claude Code skill that drives the workflow conversationally
-("Zen updated, can you patch it?"). Install it by symlinking the skill dir into
-your Claude skills folder:
+`skill/SKILL.md` is a Claude Code skill that drives the workflow conversationally ("Zen updated, can you patch it?"). Install it by symlinking the skill dir into your Claude skills folder:
 
 ```bash
 ln -s ~/code/zen-patch-kit/skill ~/.claude/skills/zen-patch
 ```
 
-The skill assumes `zen-patch` and `zen-rebuild` are on `$PATH` (per the install
-step above). Skip this section if you don't use Claude Code.
+The skill assumes `zen-patch` and `zen-rebuild` are on `$PATH` (per the install step above). Skip this section if you don't use Claude Code, Codex, or a similar coding agent.
 
 ## Usage
 
@@ -124,5 +110,4 @@ skill/SKILL.md        Claude Code skill that drives the workflow
 
 ## License
 
-The patcher and config files in this kit are released under MPL-2.0 (matching
-Zen Browser's license, since the patches are derivatives of Zen source).
+The patcher and config files in this kit are released under MPL-2.0 (matching Zen Browser's license, since the patches are derivatives of Zen source).
