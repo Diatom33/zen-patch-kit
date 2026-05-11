@@ -111,33 +111,38 @@ def patch_media_controller():
 def patch_browser_places():
     """Show keyword/location fields in bookmark panel.
 
-    Two call-sites historically used different syntax for the same hiddenRows
-    config; 1.19.11b only kept the object-property form, so we fix that one.
+    Two call-sites in browser-places.js originally hid location+keyword:
+    - the URL-bar star-button panel (`let hiddenRows = ["location","keyword"];`)
+    - the "Bookmark Page" dialog path (`hiddenRows: ["location","keyword"]`)
+    Upstream has flipped each one to an empty array on its own schedule, so
+    we patch whichever forms are still non-empty. Both empty == nothing to do.
+    Note: `places.js` has unrelated `hiddenRows` for the Library multi-select
+    panel — those should stay as-is.
     """
     print("[4/9] browser-places.js: show all bookmark panel fields")
     F = "chrome/browser/content/browser/browser-places.js"
     full = os.path.join(OMNI, F)
+    ok = True
+    # Object-property form (line ~515).
     with open(full) as f:
         content = f.read()
-    ok = True
-    # Object-property form (line ~515 in 1.19.11b).
-    if 'hiddenRows: [],' not in content:
+    if 'hiddenRows: ["location", "keyword"],' in content:
         ok &= patch(F,
             'hiddenRows: ["location", "keyword"],',
             'hiddenRows: [],',
         )
     else:
-        print("  skip (object-form already empty)")
-    # Legacy `let hiddenRows = [...]` form — only patch if still present
-    # with the un-empty value.
+        print("  skip object-form (already empty or absent)")
+    # Legacy `let hiddenRows = [...]` form (line ~283).
     with open(full) as f:
         content = f.read()
     if 'let hiddenRows = ["location", "keyword"];' in content:
         ok &= patch(F,
             'let hiddenRows = ["location", "keyword"];',
             "let hiddenRows = [];",
-            count=2,
         )
+    else:
+        print("  skip let-form (already empty or absent)")
     return ok
 
 # Restored 2026-04-30 (same day): the 1.19.11b "absorbed upstream" assumption was

@@ -85,7 +85,7 @@ user_pref("browser.urlbar.autoFill.adaptiveHistory.enabled", true);
 
 // Faster frecency decay so the URL bar adapts to current habits quicker.
 // Default 0.975 (~2.5%/day during idle recalc); 0.95 ~= 5%/day.
-user_pref("places.frecency.decayRate", 0.95);
+user_pref("places.frecency.decayRate", "0.95");
 
 // --------------------------------------------------------------------------
 // 11. Lazy Tab Loading + Session Safety
@@ -99,3 +99,8 @@ user_pref("browser.sessionstore.restore_pinned_tabs_on_demand", true);
 // 12. Skip about:config Warning Page
 // --------------------------------------------------------------------------
 user_pref("browser.aboutConfig.showWarning", false);
+
+// --------------------------------------------------------------------------
+// 13. Disable GTK Emoji Picker (Ctrl+. / Ctrl+;)
+// --------------------------------------------------------------------------
+user_pref("widget.gtk.native-emoji-dialog", false);
